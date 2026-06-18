@@ -1,0 +1,17 @@
+# Store text as LF and check out as LF on every platform. Critical for shell
+# scripts, Dockerfiles, and SQL that run inside Linux containers — CRLF would
+# break them (e.g. the Postgres init entrypoint).
+* text=auto eol=lf
+
+# Explicitly LF for container-executed files.
+*.sh    text eol=lf
+*.sql   text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.py    text eol=lf
+Dockerfile text eol=lf
+
+# Binary assets.
+*.png binary
+*.jpg binary
+*.jpeg binary

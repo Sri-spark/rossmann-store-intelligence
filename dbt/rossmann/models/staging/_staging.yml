@@ -1,0 +1,24 @@
+version: 2
+
+models:
+  - name: stg_sales
+    description: "Cleaned, typed store-day sales from raw.sales."
+    columns:
+      - name: store_key
+        description: "Store identifier."
+        tests: [not_null]
+      - name: sale_date
+        description: "Calendar date of the sales record."
+        tests: [not_null]
+
+  - name: stg_store
+    description: "Cleaned, typed store attributes from raw.store."
+    columns:
+      - name: store_key
+        description: "Store identifier (primary key)."
+        tests: [not_null, unique]
+      - name: assortment_name
+        description: "Human-readable assortment label."
+        tests:
+          - accepted_values:
+              values: ['basic', 'extra', 'extended', 'unknown']

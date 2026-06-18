@@ -1,0 +1,32 @@
+# Secrets
+.env
+
+# Python
+.venv/
+.venv-dbt/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# dbt
+dbt/rossmann/target/
+dbt/rossmann/dbt_packages/
+dbt/rossmann/logs/
+
+# Airflow
+airflow/logs/
+airflow/standalone_admin_password.txt
+
+# Evidence / Node
+evidence/node_modules/
+evidence/.evidence/
+evidence/build/
+evidence/.svelte-kit/
+
+# Data is generated, but keep it tracked so the stack is reproducible offline.
+# (Comment the next two lines out if you prefer to regenerate.)
+# data/*.csv
+
+# OS
+.DS_Store
+Thumbs.db

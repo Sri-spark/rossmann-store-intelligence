@@ -1,0 +1,8 @@
+name: warehouse
+type: postgres
+options:
+  host: postgres
+  port: 5432
+  database: warehouse
+  schema: marts
+  ssl: false

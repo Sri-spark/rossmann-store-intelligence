@@ -1,0 +1,13 @@
+# Analytics / forecasting / experiment stack.
+# Used both by the host test venv and baked into the Airflow image.
+numpy>=1.26,<2.2
+pandas>=2.1,<2.3
+scipy>=1.11,<1.15
+scikit-learn>=1.4,<1.6
+statsmodels>=0.14,<0.15
+matplotlib>=3.8,<3.10
+SQLAlchemy>=1.4.49,<2.1
+psycopg2-binary>=2.9,<3.0
+PyMySQL>=1.1,<1.2
+cryptography>=42.0           # required by PyMySQL for MySQL 8 caching_sha2_password
+pytest>=8.0,<9.0

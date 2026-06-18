@@ -1,0 +1,11 @@
+version: 2
+
+sources:
+  - name: raw
+    description: "Raw landing tables loaded from the MySQL source OLTP by the ETL task."
+    schema: raw
+    tables:
+      - name: sales
+        description: "Daily store sales facts (one row per store per day)."
+      - name: store
+        description: "Store dimension attributes."

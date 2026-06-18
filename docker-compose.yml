@@ -1,0 +1,181 @@
+# ──────────────────────────────────────────────────────────────────────────
+# Rossmann Store Intelligence — full local stack.
+#
+#   mysql     : source OLTP (seeded with Rossmann-schema sales + store data)
+#   postgres  : warehouse (db `warehouse`: raw/staging/marts) + Airflow metadata
+#   airflow   : single-container orchestrator (standalone: webserver+scheduler)
+#   evidence  : dashboard-as-code BI site
+#   seed      : one-shot loader (mysql) — runs once and exits 0
+#
+# All four long-running services declare healthchecks. `docker compose up`
+# brings the stack up; `seed` self-loads MySQL after it is healthy.
+# ──────────────────────────────────────────────────────────────────────────
+
+x-airflow-env: &airflow-env
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+  AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_AIRFLOW_DB}
+  AIRFLOW__CORE__PARALLELISM: "4"
+  AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+  # ── warehouse + source connection details consumed by the pipeline tasks ──
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_USER: ${POSTGRES_USER}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  POSTGRES_WAREHOUSE_DB: ${POSTGRES_WAREHOUSE_DB}
+  MYSQL_HOST: mysql
+  MYSQL_PORT: "3306"
+  MYSQL_DATABASE: ${MYSQL_DATABASE}
+  MYSQL_USER: ${MYSQL_USER}
+  MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+  ARTIFACTS_DIR: /opt/airflow/artifacts
+  ETL_TMP: /tmp/rossmann_etl
+  PROJECT_DIR: /opt/airflow/project
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: rossmann_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./scripts/mysql_init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  postgres:
+    image: postgres:16
+    container_name: rossmann_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_AIRFLOW_DB}
+      POSTGRES_WAREHOUSE_DB: ${POSTGRES_WAREHOUSE_DB}
+    ports:
+      # Host port 5433 -> container 5432 to avoid clashing with a native
+      # PostgreSQL the host may already run on 5432. In-network services still
+      # reach this DB at postgres:5432 over the compose network.
+      - "5433:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./scripts/postgres_init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  seed:
+    build:
+      context: .
+      dockerfile: airflow/Dockerfile
+    image: rossmann/airflow:latest
+    container_name: rossmann_seed
+    restart: "no"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      <<: *airflow-env
+    volumes:
+      - ./scripts:/opt/airflow/project/scripts
+      - ./data:/opt/airflow/project/data
+    # Wrap in bash -c: the Airflow image entrypoint only execs a bare `bash` or
+    # `python` first token directly; anything else is treated as an airflow
+    # subcommand. bash -c lets us invoke the analytics venv's python.
+    command: ["bash", "-c", "/opt/analytics-venv/bin/python /opt/airflow/project/scripts/seed_mysql.py"]
+
+  airflow:
+    build:
+      context: .
+      dockerfile: airflow/Dockerfile
+    image: rossmann/airflow:latest
+    container_name: rossmann_airflow
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    environment:
+      <<: *airflow-env
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_ADMIN_USER}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD}
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./etl:/opt/airflow/project/etl
+      - ./analytics:/opt/airflow/project/analytics
+      - ./dbt:/opt/airflow/project/dbt
+      - ./scripts:/opt/airflow/project/scripts
+      - ./data:/opt/airflow/project/data
+      - ./artifacts:/opt/airflow/artifacts
+      - airflow_logs:/opt/airflow/logs
+    command: ["bash", "-c", "airflow db migrate && exec airflow standalone"]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/health').status==200 else 1)\""]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 90s
+
+  evidence:
+    build:
+      context: ./evidence
+      dockerfile: Dockerfile
+    image: rossmann/evidence:latest
+    container_name: rossmann_evidence
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Evidence postgres connector configuration (read from env at build/run).
+      EVIDENCE_SOURCE__warehouse__host: postgres
+      EVIDENCE_SOURCE__warehouse__port: "5432"
+      EVIDENCE_SOURCE__warehouse__database: ${POSTGRES_WAREHOUSE_DB}
+      EVIDENCE_SOURCE__warehouse__user: ${POSTGRES_USER}
+      EVIDENCE_SOURCE__warehouse__password: ${POSTGRES_PASSWORD}
+      EVIDENCE_SOURCE__warehouse__schema: marts
+      NODE_ENV: production
+    ports:
+      - "${EVIDENCE_PORT:-3001}:3000"
+    # No bind mounts: the dashboard (package.json, template, node_modules, pages,
+    # sources) is fully baked into the image. Build sources (best-effort: the
+    # marts may not exist until the DAG has run on a cold start), then serve dev.
+    # The dev server re-runs sources on demand once the marts are populated.
+    # Build sources, then serve. The sources step is time-boxed: the postgres
+    # connector can leave the process hanging after errors when the marts do not
+    # exist yet (cold start before the DAG runs); the manifest is written well
+    # before that, so a hard timeout lets startup proceed to the dev server.
+    command: ["sh", "-c", "timeout -s KILL 60 npx evidence sources || true; exec npx evidence dev --host 0.0.0.0 --port 3000"]
+    healthcheck:
+      # Healthy when the dev server responds at all: exit 0 (HTTP 200) or exit 8
+      # (HTTP 500 — server up but marts not yet populated by the DAG). Only a
+      # down server (connection refused) is unhealthy.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:3000/ || [ $$? -eq 8 ]"]
+      interval: 20s
+      timeout: 10s
+      retries: 20
+      start_period: 120s
+
+volumes:
+  mysql_data:
+  pg_data:
+  airflow_logs:
